@@ -1,3 +1,5 @@
+import asyncio
+import json
 import logging
 import traceback
 
@@ -10,16 +12,15 @@ from aiogram.dispatcher import FSMContext
 from aiogram.dispatcher.filters.state import State, StatesGroup
 
 from db import get_or_create, get_role, set_role, set_lang, get_lang, \
-    get_account_list, add_account, sync_get_account_list, get_info
+    get_account_list, add_account, sync_get_account_list, get_info, delete_account_db, all_account_list
 
-from workers_telethon import create_client, success_code
+from workers_telethon import create_client, success_code, run_phone, stop_phone, clients_phone
 
-logging.basicConfig(level=logging.DEBUG)
+# logging.basicConfig(level=logging.DEBUG)
 
 storage = MemoryStorage()
 bot = Bot(token=TELEGRAM_TOKEN)
 dp = Dispatcher(bot, storage=storage)
-
 
 uid_client = {}
 cancel_btn = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
@@ -32,6 +33,23 @@ class NewAccount(StatesGroup):
     password = State()
     url = State()
     code = State()
+
+
+send_notify = asyncio.Queue()
+
+
+async def send_queue(send_notify):
+    while True:
+        text = await send_notify.get()
+        js_text = json.loads(text)
+        uid = js_text["uid"]
+        message = js_text["message"]
+        await bot.send_message(uid, message)
+
+
+async def run_is_true_account():
+    for acc in await all_account_list():
+        await run_phone(acc.phone, acc.uid, send_notify)
 
 
 @dp.message_handler(commands=['start', 'help'])
@@ -95,22 +113,31 @@ async def select_account(callback: types.CallbackQuery):
     lang = await get_lang(uid)
 
     msg = message_dict[lang]["view_profile"]
-    link, status, open_channel = await get_info(uid, phone)
+    link, status, open_channel, delay, close_url = await get_info(uid, phone)
     if link is not None and status is not None and open_channel is not None:
         msg = msg.replace("{PHONE}", phone)
         msg = msg.replace("{LINK}", link)
 
         if status:
             status = "Power On"
+            START_STOP = "Stop account"
         else:
             status = "Power Off"
+            START_STOP = "Run account"
+
+        if open_channel:
+            open_channel = "Open"
+        else:
+            open_channel = "Close"
 
         msg = msg.replace("{STATUS}", str(status))
+        msg = msg.replace("{TYPE}", open_channel)
+        msg = msg.replace("{TIMEOUT}", str(delay))
+        msg = msg.replace("{LINK_CLOSE}", close_url)
 
-    if status:
-        START_STOP = "Stop account"
     else:
-        START_STOP = "Run account"
+        return await callback.answer()
+    await callback.answer()
 
     if open_channel:
         OPEN_CLOSE = "Close channel"
@@ -122,9 +149,71 @@ async def select_account(callback: types.CallbackQuery):
         types.InlineKeyboardButton(text=START_STOP, callback_data=f"run__{phone}"),
         types.InlineKeyboardButton(text=OPEN_CLOSE, callback_data=f"open__{phone}")
     ])
+    knb.add(types.InlineKeyboardButton(text="Delete", callback_data=f"delete__{phone}"))
     knb.add(types.InlineKeyboardButton(text="Back", callback_data="back to list account"))
 
     return await callback.message.reply(msg, reply_markup=knb)
+
+
+@dp.callback_query_handler(lambda callback: str(callback.data).startswith("delete__"))
+async def delete_account(callback: types.CallbackQuery):
+    """
+
+    :type callback: object
+    """
+    uid = callback.from_user.id
+    data = callback.data
+    phone = str(data).split("delete__")[1]
+    await delete_account_db(phone, uid)
+    return await callback.message.reply("Deleted.")
+
+
+@dp.callback_query_handler(lambda callback: str(callback.data).startswith("run__"))
+async def run_account(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    data = callback.data
+    phone = str(data).split("run__")[1]
+    lang = await get_lang(uid)
+    link, status, open_channel, _, _ = await get_info(uid, phone)
+
+    await callback.message.delete()
+    if status is False:
+        try:
+            await run_phone(phone, uid, send_notify)
+        except:
+            print(traceback.format_exc())
+            msg = message_dict[lang]["error_start"]
+            return await bot.send_message(uid, msg)
+        else:
+            msg = message_dict[lang]["good_start"]
+            return await bot.send_message(uid, msg)
+
+    else:
+        msg = message_dict[lang]["good_stop"]
+        await stop_phone(phone, uid)
+        return await bot.send_message(uid, msg)
+
+
+@dp.callback_query_handler(lambda callback: str(callback.data).startswith("open__"))
+async def open_account(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    data = callback.data
+    phone = str(data).split("open__")[1]
+    lang = await get_lang(uid)
+    link, status, open_channel, _, _ = await get_info(uid, phone)
+
+    await callback.message.delete()
+    if status is False:
+        msh = message_dict[lang]["bot_off"]
+        await bot.send_message(uid, msh)
+        return await callback.answer()
+
+    obj = clients_phone[uid][phone]
+    if open_channel:
+        await obj.set_open_close(False)
+    else:
+        await obj.set_open_close(True)
+    return await bot.send_message(uid, "Task processing...")
 
 
 @dp.callback_query_handler(lambda callback: callback.data)
@@ -169,12 +258,24 @@ async def main_logic_bot(message: types.Message):
         return await bot.send_message(uid, msg, reply_markup=knb)
 
     if message_text in [message_dict[la]["newAccount"] for la in ["ru", "en"]]:
+        if len(await all_account_list(uid)) >= 10:
+            return await bot.send_message(uid, "You can add a maximum of 10 accounts.")
+
         await NewAccount.proxy.set()
         msg = message_dict[lang]["type_proxy"]
         return await bot.send_message(uid, msg, reply_markup=cancel_btn)
 
     if message_text in [message_dict[la]["viewLog"] for la in ["ru", "en"]]:
-        return await bot.send_message(uid, "3")
+        infos = await all_account_list(uid)
+
+        message = []
+        for info in infos:
+            message.append(
+                f"Phone: {info.phone}\nUrl: @{info.url}\nPrivate url: {info.close_url}"
+            )
+        message = "\n".join(message)
+
+        return await bot.send_message(uid, "Your accounts:\n\n" + message)
 
     else:
         return await select_lang(message)
@@ -325,4 +426,7 @@ async def access_denied(message: types.Message):
 
 
 if __name__ == '__main__':
-    executor.start_polling(dp, skip_updates=True)
+    loop = asyncio.get_event_loop()
+    loop.create_task(send_queue(send_notify))
+    loop.create_task(run_is_true_account())
+    executor.start_polling(dp, skip_updates=True, loop=loop)

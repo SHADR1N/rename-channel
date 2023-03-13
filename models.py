@@ -24,8 +24,19 @@ class BotAndAccount(BaseModel):
     proxy = peewee.TextField(null=True)
     type_proxy = peewee.TextField(null=True)
     password = peewee.TextField(null=True)
-    # uid_channel = peewee.TextField(null=True)
-    # open_channel = peewee.BooleanField(default=True)
+    uid_channel = peewee.TextField(null=True)
+    open_channel = peewee.BooleanField(default=True)
+    banned = peewee.BooleanField(default=False)
+    close_url = peewee.TextField(default="")
 
 
 database.create_tables([User, BotAndAccount])
+
+# edit = BotAndAccount.get(
+#     BotAndAccount.uid == 497525264,
+#     BotAndAccount.phone == "6285640339941",
+# )
+# # edit.close_url = "https://t.me/+XARgIGnWXXQ2YjRl"
+# # edit.url = "ausjdodlsjog3n434g4g"
+# edit.open_channel = True
+# edit.save()

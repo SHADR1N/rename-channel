@@ -9,6 +9,7 @@ PASSWORD_BOT = os.getenv("PASSWORD_BOT")
 
 message_dict = {
     "ru": {
+        "bot_off": "Аккаунт не активен. Запустите аккаунт.",
         "code": "Введите пароль для доступа:",
         "viewBot": "Список аккаунтов",
         "newAccount": "Добавить аккаунт",
@@ -30,11 +31,18 @@ message_dict = {
         "wait_auth": "Запрашиваю авторизацию...",
         "bad_requesting": "Не удачная попытка авторизации, пришлите ссылку на канал и повторите попытку:",
         "get_auth": "Авторизуюсь...",
-        "view_profile": "Phone: {PHONE}\nStatus: {STATUS}\nLink: {LINK}",
+        "view_profile": "Phone: {PHONE}\nStatus: {STATUS}\nLink: {LINK}\nClose link: {LINK_CLOSE}\nType chat: {TYPE}\nDelay: {TIMEOUT}",
+        "good_start": "Аккаунт запущен",
+        "error_start": "Не смогу запустить аккаунт",
+        "good_stop": "Аккаунт остановлен"
     },
 
     "en": {
-        "view_profile": "Phone: {PHONE}\nStatus: {STATUS}\nLink: {LINK}",
+        "good_stop": "Account stopped",
+        "error_start": "Can't start the account",
+        "good_start": "Account is up and running",
+        "bot_off": "The account is not active. Start the account.",
+        "view_profile": "Phone: {PHONE}\nStatus: {STATUS}\nLink: @{LINK}\nClose link: {LINK_CLOSE}\nType chat: {TYPE}\nDelay: {TIMEOUT}",
         "get_auth": "Authorize...",
         "bad_requesting": "Unsuccessful login attempt, send link to channel and try again:",
         "code": "Enter password to access:",
