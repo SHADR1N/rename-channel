@@ -17,6 +17,7 @@ clients_phone = {}
 
 class TelethonRunApp:
     def __init__(self, phone, uid, send_notify):
+        self.loop = None
         self.send_notify = send_notify
         self.client: Optional[TelegramClient] = None
         self.phone = phone
@@ -164,34 +165,80 @@ class TelethonRunApp:
         return proxy
 
     async def create_connect(self):
+        # Get the event loop
+        self.loop = asyncio.get_event_loop()
+
+        # Define the _create_connect coroutine
         async def _create_connect():
+            # Define the valid_client coroutine to check if the client is authorized
+            async def valid_client(client):
+                while True:
+                    if not await client.is_user_authorized():
+                        await account_is_bad(self.phone, self.uid)
+                        await self.send_notify.put(str(json.dumps({
+                            "uid": self.uid,
+                            "message": "❌ Account is banned."
+                        })))
+                        await self.stop_connect()
+                        break
+                    await self.timeout_as(10)
+
+            # Get the proxy for the account
             proxy = await get_proxy(self.phone, self.uid)
-            if proxy:
+            if not proxy:
+                await self.send_notify.put(str(json.dumps({
+                    "uid": self.uid,
+                    "message": "❌ Account does not have a proxy."
+                })))
+                raise ValueError("Account does not have a proxy.")
 
-                proxy = await self.convert_proxy(proxy)
-                self.client = TelegramClient(
-                    f"accounts/{self.phone}",
-                    api_id=6,
-                    api_hash="eb06d4abfb49dc3eeb1aeb98ae0f581e",
-                    proxy=proxy,
-                    connection_retries=5,
-                    auto_reconnect=True
-                )
-                await self.client.connect()
-                if await self.client.is_user_authorized():
-                    await self.client.start()
-                    await self.run_rename(self.client)
-                else:
-                    await account_is_bad(self.phone, self.uid)
-                    raise ValueError
-            else:
-                raise ValueError
+            # Convert the proxy to the required format for the TelegramClient
+            proxy = await self.convert_proxy(proxy)
 
-        threading.Thread(target=asyncio.run, args=(_create_connect(),)).start()
+            # Create the TelegramClient instance with the proxy
+            self.client = TelegramClient(
+                f"accounts/{self.phone}",
+                api_id=6,
+                api_hash="eb06d4abfb49dc3eeb1aeb98ae0f581e",
+                proxy=proxy,
+                connection_retries=5,
+                auto_reconnect=True,
+                loop=self.loop
+            )
+
+            # Connect the client to the Telegram API
+            await self.client.connect()
+
+            # Check if the client is authorized
+            if not await self.client.is_user_authorized():
+                await account_is_bad(self.phone, self.uid)
+                await self.send_notify.put(str(json.dumps({
+                    "uid": self.uid,
+                    "message": "❌ Account is banned."
+                })))
+                raise ValueError("Account is banned.")
+
+            # Start the client and validate it with the valid_client coroutine
+            await self.client.start()
+            self.loop.create_task(valid_client(self.client))
+            await self.run_rename(self.client)
+
+        # Define the run_in_main_thread function to run the _create_connect coroutine in the main thread
+        def run_in_main_thread():
+            asyncio.set_event_loop(self.loop)
+            self.loop.run_until_complete(_create_connect())
+
+        # Start a new thread to run the run_in_main_thread function
+        threading.Thread(target=run_in_main_thread).start()
 
     async def stop_connect(self):
         if self.client and await self.client.is_user_authorized():
             await self.client.disconnect()
+        try:
+            self.loop.close()
+        except:
+            pass
+
         self.stop = True
 
 
@@ -256,7 +303,6 @@ async def success_code(client_info: dict):
     code = client_info["code"]
     password = client_info["password"]
     phone = client_info["phone"]
-    print(password)
 
     try:
         await client.sign_in(

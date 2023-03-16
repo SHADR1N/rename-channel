@@ -61,7 +61,7 @@ async def get_info(uid: int, phone: str):
     )
     if account:
         return account[0].url, account[0].status, account[0].open_channel, account[0].delay_before_rename, account[
-            0].close_url
+            0].close_url, account[0].banned
     else:
         return None, None, None
 
@@ -83,6 +83,7 @@ async def account_is_bad(phone, uid):
     obj = BotAndAccount.select().where(BotAndAccount.phone == phone, BotAndAccount.uid == uid)
     if obj:
         obj[0].banned = True
+        obj[0].status = False
         obj[0].save()
     return
 
@@ -139,9 +140,11 @@ async def add_account(client_info):
     proxy = client_info["proxy"]
     url = client_info["url"]
     uid = client_info["uid"]
+    delay = client_info["delay"]
 
     BotAndAccount(
         uid=uid,
+        delay_before_rename=delay,
         phone=phone,
         url=url,
         proxy=proxy,

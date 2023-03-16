@@ -31,6 +31,7 @@ class NewAccount(StatesGroup):
     proxy = State()
     phone = State()
     password = State()
+    delay = State()
     url = State()
     code = State()
 
@@ -113,7 +114,7 @@ async def select_account(callback: types.CallbackQuery):
     lang = await get_lang(uid)
 
     msg = message_dict[lang]["view_profile"]
-    link, status, open_channel, delay, close_url = await get_info(uid, phone)
+    link, status, open_channel, delay, close_url, banned = await get_info(uid, phone)
     if link is not None and status is not None and open_channel is not None:
         msg = msg.replace("{PHONE}", phone)
         msg = msg.replace("{LINK}", link)
@@ -130,10 +131,16 @@ async def select_account(callback: types.CallbackQuery):
         else:
             open_channel = "Close"
 
+        if banned:
+            banned = "❌ Account is banned"
+        else:
+            banned = "Account active"
+
         msg = msg.replace("{STATUS}", str(status))
         msg = msg.replace("{TYPE}", open_channel)
         msg = msg.replace("{TIMEOUT}", str(delay))
         msg = msg.replace("{LINK_CLOSE}", close_url)
+        msg = msg.replace("{BANNED}", banned)
 
     else:
         return await callback.answer()
@@ -174,12 +181,18 @@ async def run_account(callback: types.CallbackQuery):
     data = callback.data
     phone = str(data).split("run__")[1]
     lang = await get_lang(uid)
-    link, status, open_channel, _, _ = await get_info(uid, phone)
+    link, status, open_channel, _, _, _ = await get_info(uid, phone)
 
     await callback.message.delete()
     if status is False:
         try:
+
             await run_phone(phone, uid, send_notify)
+
+        except ValueError:
+            msg = message_dict[lang]["error_start"]
+            return await bot.send_message(uid, msg)
+
         except:
             print(traceback.format_exc())
             msg = message_dict[lang]["error_start"]
@@ -200,7 +213,7 @@ async def open_account(callback: types.CallbackQuery):
     data = callback.data
     phone = str(data).split("open__")[1]
     lang = await get_lang(uid)
-    link, status, open_channel, _, _ = await get_info(uid, phone)
+    link, status, open_channel, _, _, _ = await get_info(uid, phone)
 
     await callback.message.delete()
     if status is False:
@@ -283,15 +296,22 @@ async def main_logic_bot(message: types.Message):
 
 @dp.message_handler(state=NewAccount.proxy)
 async def state_proxy(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
+    lang = await get_lang(uid)
+
     if message.text == "Cancel":
         await select_lang(message)
         return await state.finish()
 
     async with state.proxy() as data:
+        proxy = message.text
+
+        msg = message_dict[lang]["bad_proxy"]
+        if not ":" in proxy or len(proxy.split(":")) < 3 or proxy.split(":")[0] not in ("socks5", "http"):
+            return await message.reply(msg, reply_markup=cancel_btn)
+
         data['proxy'] = message.text
 
-    uid = message.from_user.id
-    lang = await get_lang(uid)
     msg = message_dict[lang]["type_phone"]
     await NewAccount.next()
     return await message.reply(msg, reply_markup=cancel_btn)
@@ -333,6 +353,28 @@ async def state_proxy(message: types.Message, state: FSMContext):
         else:
             data['password'] = message.text
 
+    msg = message_dict[lang]["type_delay"]
+    await NewAccount.next()
+    return await message.reply(msg, reply_markup=cancel_btn)
+
+
+@dp.message_handler(state=NewAccount.delay)
+async def state_proxy(message: types.Message, state: FSMContext):
+    if message.text == "Cancel":
+        await select_lang(message)
+        return await state.finish()
+
+    uid = message.from_user.id
+    lang = await get_lang(uid)
+    msg = message_dict[lang]["error_delay"]
+    try:
+        int(message.text)
+    except:
+        return await bot.send_message(uid, msg)
+
+    async with state.proxy() as data:
+        data['delay'] = int(message.text)
+
     msg = message_dict[lang]["type_url"]
     await NewAccount.next()
     return await message.reply(msg, reply_markup=cancel_btn)
@@ -364,21 +406,48 @@ async def state_proxy(message: types.Message, state: FSMContext):
 
     uid_client[str(uid)] = [client, phone_code_hash]
     async with state.proxy() as data:
-        data['url'] = message.text
+        url = message.text
+        if "@" in url:
+            url = url[1:]
+        if "/" in url:
+            url = url.split("/")[-1]
+
+        data['url'] = url
 
     msg = message_dict[lang]["wait_code"]
     await NewAccount.code.set()
-    return await message.reply(msg, reply_markup=cancel_btn)
+    btn = types.ReplyKeyboardMarkup(row_width=1, resize_keyboard=True)
+    btn.add(types.KeyboardButton(text="Try again send message"))
+    btn.add(types.KeyboardButton(text="Cancel"))
+    return await message.reply(msg, reply_markup=btn)
 
 
 @dp.message_handler(state=NewAccount.code)
 async def state_proxy(message: types.Message, state: FSMContext):
+    uid = message.from_user.id
+    lang = await get_lang(uid)
+
     if message.text == "Cancel":
         await select_lang(message)
         return await state.finish()
 
-    uid = message.from_user.id
-    lang = await get_lang(uid)
+    if message.text == "Try again send message":
+        data = await state.get_data()
+        proxy = data["proxy"]
+        phone = data["phone"]
+        password = data["password"]
+
+        msg = message_dict[lang]["wait_auth"]
+        await message.reply(msg)
+        try:
+            client, phone_code_hash = await create_client(phone, proxy, password)
+        except:
+            print(traceback.format_exc())
+            msg = message_dict[lang]["bad_requesting"]
+            return await message.reply(msg, reply_markup=cancel_btn)
+        else:
+            msg = message_dict[lang]["wait_code"]
+            return await bot.send_message(uid, msg)
 
     async with state.proxy() as data:
         data["code"] = message.text
@@ -390,6 +459,7 @@ async def state_proxy(message: types.Message, state: FSMContext):
     url = data["url"]
     password = data["password"]
     code = data["code"]
+    delay = data["delay"]
     client = uid_client[str(uid)]
 
     client_info = {
@@ -399,18 +469,26 @@ async def state_proxy(message: types.Message, state: FSMContext):
         "phone": phone,
         "url": url,
         "proxy": proxy,
-        "uid": uid
+        "uid": uid,
+        "delay": delay
     }
 
     msg = message_dict[lang]["get_auth"]
     await message.reply(msg)
     try:
+
         await success_code(client_info)
+
+    except ValueError:
+        msg = message_dict[lang]["bad_auth"]
+        await message.reply(msg, reply_markup=cancel_btn)
+        return
+
     except:
         print(traceback.format_exc())
         msg = message_dict[lang]["bad_auth"]
         await message.reply(msg, reply_markup=cancel_btn)
-        return await state.finish()
+        return
 
     await add_account(client_info)
     msg = message_dict[lang]["good_add"]
